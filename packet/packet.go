@@ -3,8 +3,10 @@ package packet
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math"
+	"strings"
 
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
@@ -111,27 +113,38 @@ func (p *Packet) Encode() ([]byte, error) {
 }
 
 var malformedPacketErr = errors.New("malformed packet")
-var badPacketTypeErr = errors.New("bad packet type")
 
 func Decode(mode binary.ByteOrder, reader io.Reader) (*Packet, error) {
 	header := PacketHeader{}
 
 	if err := binary.Read(reader, mode, &header); err != nil {
-		return nil, errors.Wrap(err, malformedPacketErr.Error())
+		return nil, errors.Wrap(err, malformedPacketErr.Error() + ": read")
 	}
 
 	payload := make([]byte, header.Size - headerBytes)
 	_, err := io.ReadFull(reader, payload)
 	if err != nil {
-		return nil, errors.Wrap(err, malformedPacketErr.Error())
-	}
-
-	if header.Type != TypeAuthRes && header.Type != TypeCommandRes {
-		return nil, badPacketTypeErr
+		return nil, errors.Wrap(err, malformedPacketErr.Error() + ": payload")
 	}
 
 	return &Packet{
 		PacketHeader: header,
 		Body: payload[:len(payload)-2],
+		Mode: mode,
 	}, nil
+}
+
+func (p *Packet) String() string {
+	out := strings.Builder{}
+	out.WriteString(fmt.Sprintf("Packet ID %d:\n", p.ID))
+	out.WriteString(fmt.Sprintf("Size: %d\n", p.Size))
+	out.WriteString(fmt.Sprintf("Type: %d\n", p.Type))
+	out.WriteString(fmt.Sprintf("Mode: %v\n", p.Mode))
+	out.WriteString("Bytes:\n  ")
+	for _, b := range p.Body {
+		out.WriteString(fmt.Sprintf("%x ", b))
+	}
+	out.WriteString(fmt.Sprintf("\nString: %s\n", string(p.Body)))
+
+	return out.String()
 }

@@ -4,9 +4,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/refractorgscm/rcon2/packet"
 )
 
 type Client struct {
@@ -15,6 +17,8 @@ type Client struct {
 	conn *net.TCPConn
 
 	log Logger
+
+	cmdMutex sync.Mutex
 }
 
 type Config struct {
@@ -33,6 +37,8 @@ type Config struct {
 
 	ReadDeadline time.Duration
 	WriteDeadline time.Duration
+
+	RestrictedPacketIDs []int32
 }
 
 
@@ -41,6 +47,7 @@ var DefaultConfig = &Config{
 	EndianMode: binary.LittleEndian,
 	ReadDeadline: time.Second*2,
 	WriteDeadline: time.Second*2,
+	RestrictedPacketIDs: []int32{},
 }
 
 func NewClient(host string, port uint16, password string) *Client {
@@ -49,15 +56,35 @@ func NewClient(host string, port uint16, password string) *Client {
 	config.Port = port
 	config.Password = password
 
-	return &Client{
-		config: config,
-	}
+	return NewClientFromConfig(DefaultConfig)
 }
 
 func NewClientFromConfig(config *Config) *Client {
-	return &Client{
+	c := &Client{
 		config: config,
 	}
+
+	if c.log == nil {
+		c.log = &DefaultLogger{}
+	}
+
+	if c.config.EndianMode == nil {
+		c.config.EndianMode = binary.LittleEndian
+	}
+
+	if c.config.ConnTimeout == 0 {
+		c.config.ConnTimeout = DefaultConfig.ConnTimeout
+	}
+
+	if c.config.ReadDeadline == 0 {
+		c.config.ConnTimeout = DefaultConfig.ReadDeadline
+	}
+
+	if c.config.WriteDeadline == 0 {
+		c.config.ConnTimeout = DefaultConfig.WriteDeadline
+	}
+
+	return c
 }
 
 func (c *Client) SetLogger(logger Logger) {
@@ -77,5 +104,57 @@ func (c *Client) Connect() error {
 		return errors.Wrap(err, "tcp dial error")
 	}
 
+	if err := c.authenticate(); err != nil {
+		c.log.Debug("Authentication failed", err)
+		return err
+	}
+
 	return nil
+}
+
+func (c *Client) authenticate() error {
+	p := c.newPacket(packet.TypeAuth, c.config.Password)
+
+	if err := c.sendPacket(p); err != nil {
+		return errors.Wrap(err, "could not send packet")
+	}
+
+	res, err := c.readPacketTimeout()
+	if err != nil {
+		return errors.Wrap(err, "could not get auth response")
+	}
+
+	if res.Type != packet.TypeAuthRes {
+		return errors.New("packet was not of the type auth response")
+	}
+
+	if res.ID == packet.AuthFailedID {
+		return errors.Wrap(ErrAuthentication, "authentication failed")
+	}
+
+	c.log.Debug("Authenticated")
+
+	return nil
+}
+
+func (c *Client) RunCommand(cmd string) (string, error) {
+	c.cmdMutex.Lock()
+	defer c.cmdMutex.Unlock()
+
+	p := c.newPacket(packet.TypeCommand, cmd)
+
+	if err := c.sendPacket(p); err != nil {
+		return "", err
+	}
+
+	res, err := c.readPacket()
+	if err != nil {
+		return "", err
+	}
+
+	return string(res.Body), nil
+}
+
+func (c *Client) newPacket(pType packet.PacketType, body string) *packet.Packet {
+	return packet.New(c.config.EndianMode, pType, []byte(body), c.config.RestrictedPacketIDs)
 }

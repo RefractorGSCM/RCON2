@@ -1,4 +1,4 @@
-module github.com/refractorgscm/rcon
+module github.com/refractorgscm/rcon2
 
 go 1.17
 
